@@ -5,7 +5,20 @@
       "Bash(start \"\" \"http://localhost:8080/Team%20Task%20Manager.html\")",
       "Bash(npm install *)",
       "Bash(git init *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(docker --version)",
+      "Bash(where psql *)",
+      "Bash(where pg_ctl)",
+      "Bash(where sqlite3 *)",
+      "Bash(JWT_SECRET=localsecret node server.js)",
+      "Bash(curl -s http://localhost:3000/api/health)",
+      "Bash(curl -s -X POST http://localhost:3000/api/auth/signup -H 'Content-Type: application/json' -d '{\"name\":\"Test User\",\"email\":\"test@test.com\",\"password\":\"password123\",\"workspace\":\"Test Corp\"}')",
+      "Bash(curl -s -X POST http://localhost:3000/api/auth/signup -H 'Content-Type: application/json' -d '{\"name\":\"Test User\",\"email\":\"test2@test.com\",\"password\":\"password123\",\"workspace\":\"Demo Corp\"}')",
+      "Bash(node -e \"process.stdin.resume\\(\\);let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const a=JSON.parse\\(d\\);console.log\\('Projects:',a.length,a[0]&&a[0].name\\)}\\)\")",
+      "Bash(curl *)",
+      "Bash(pkill -f \"node server.js\")",
+      "Bash(node server.js)"
     ]
   }
 }

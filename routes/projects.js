@@ -6,17 +6,34 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get('/', async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT p.*, u.name as owner_name,
-       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) as task_count,
-       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'done') as done_count,
-       (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) as member_count
+  const wid = req.user.workspace_id;
+  const { rows: projects } = await pool.query(
+    `SELECT p.id, p.workspace_id, p.name, p.key, p.description, p.color, p.status, p.owner_id, p.due_date, p.created_at,
+       u.name as owner_name
      FROM projects p
      LEFT JOIN users u ON u.id = p.owner_id
      WHERE p.workspace_id = $1
      ORDER BY p.created_at ASC`,
-    [req.user.workspace_id]
+    [wid]
   );
+  const { rows: taskCounts } = await pool.query(
+    `SELECT project_id, COUNT(*) as task_count, COUNT(CASE WHEN status='done' THEN 1 END) as done_count
+     FROM tasks WHERE workspace_id = $1 GROUP BY project_id`,
+    [wid]
+  );
+  const { rows: memCounts } = await pool.query(
+    `SELECT pm.project_id, COUNT(*) as member_count FROM project_members pm
+     JOIN projects p ON p.id = pm.project_id WHERE p.workspace_id = $1 GROUP BY pm.project_id`,
+    [wid]
+  );
+  const tcMap = Object.fromEntries(taskCounts.map(r => [r.project_id, r]));
+  const mcMap = Object.fromEntries(memCounts.map(r => [r.project_id, r.member_count]));
+  const rows = projects.map(p => ({
+    ...p,
+    task_count: tcMap[p.id]?.task_count || 0,
+    done_count: tcMap[p.id]?.done_count || 0,
+    member_count: mcMap[p.id] || 0,
+  }));
   res.json(rows);
 });
 

@@ -7,15 +7,17 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get('/', async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT u.id, u.name, u.email, u.role, u.title, u.created_at,
-       COUNT(DISTINCT t.id) FILTER (WHERE t.status != 'done') as open_tasks
-     FROM users u
-     LEFT JOIN tasks t ON t.assignee_id = u.id AND t.workspace_id = u.workspace_id
-     WHERE u.workspace_id = $1
-     GROUP BY u.id ORDER BY u.name`,
-    [req.user.workspace_id]
+  const wid = req.user.workspace_id;
+  const { rows: users } = await pool.query(
+    `SELECT u.id, u.name, u.email, u.role, u.title, u.created_at FROM users u WHERE u.workspace_id = $1 ORDER BY u.name`,
+    [wid]
   );
+  const { rows: openTasks } = await pool.query(
+    `SELECT assignee_id, COUNT(*) as open_tasks FROM tasks WHERE workspace_id=$1 AND status!='done' GROUP BY assignee_id`,
+    [wid]
+  );
+  const otMap = Object.fromEntries(openTasks.map(r => [r.assignee_id, r.open_tasks]));
+  const rows = users.map(u => ({ ...u, open_tasks: otMap[u.id] || 0 }));
   res.json(rows);
 });
 

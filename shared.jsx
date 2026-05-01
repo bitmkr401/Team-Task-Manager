@@ -55,14 +55,16 @@ function AvStack({ names, size, max = 4 }) {
 
 /* ───────── Status & priority pills ───────── */
 const STATUS_META = {
-  todo:  { label: 'To Do',       cls: 'pill-todo',  dot: '#a59b85' },
-  prog:  { label: 'In Progress', cls: 'pill-prog',  dot: '#b48a2c' },
-  rev:   { label: 'In Review',   cls: 'pill-rev',   dot: '#3a4978' },
-  done:  { label: 'Done',        cls: 'pill-done',  dot: '#5c7a5a' },
-  block: { label: 'Blocked',     cls: 'pill-block', dot: '#a83a2c' },
+  todo:        { label: 'To Do',       cls: 'pill-todo',  dot: '#a59b85' },
+  prog:        { label: 'In Progress', cls: 'pill-prog',  dot: '#b48a2c' },
+  in_progress: { label: 'In Progress', cls: 'pill-prog',  dot: '#b48a2c' },
+  rev:         { label: 'In Review',   cls: 'pill-rev',   dot: '#3a4978' },
+  review:      { label: 'In Review',   cls: 'pill-rev',   dot: '#3a4978' },
+  done:        { label: 'Done',        cls: 'pill-done',  dot: '#5c7a5a' },
+  block:       { label: 'Blocked',     cls: 'pill-block', dot: '#a83a2c' },
 };
 function StatusPill({ status }) {
-  const m = STATUS_META[status];
+  const m = STATUS_META[status] || { label: status || '—', cls: 'pill-todo', dot: '#a59b85' };
   return (
     <span className={`pill ${m.cls}`}>
       <span className="pill-dot" style={{ background: m.dot }} />
@@ -78,6 +80,7 @@ function PrioBadge({ p }) {
 /* ───────── Date helpers ───────── */
 const TODAY = new Date(2026, 3, 30); // April 30, 2026
 function dateLabel(iso) {
+  if (!iso) return '—';
   const d = new Date(iso);
   const ms = d - TODAY;
   const days = Math.round(ms / (1000 * 60 * 60 * 24));
@@ -89,7 +92,7 @@ function dateLabel(iso) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 function isOverdue(iso, status) {
-  if (status === 'done') return false;
+  if (!iso || status === 'done') return false;
   return new Date(iso) < TODAY;
 }
 function dayDelta(iso) {
