@@ -1,107 +1,112 @@
-const express = require('express');
-const pool = require('../db');
+const express  = require('express');
+const supabase = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(requireAuth);
 
+// Helper: enrich tasks with assignee_name and project info
+async function enrichTasks(tasks, wid) {
+  if (!tasks || tasks.length === 0) return [];
+
+  const [{ data: users }, { data: projects }] = await Promise.all([
+    supabase.from('users').select('id, name').eq('workspace_id', wid),
+    supabase.from('projects').select('id, name, key, color').eq('workspace_id', wid),
+  ]);
+
+  const userMap    = Object.fromEntries((users    || []).map(u => [u.id, u]));
+  const projectMap = Object.fromEntries((projects || []).map(p => [p.id, p]));
+
+  return tasks.map(t => ({
+    ...t,
+    assignee_name:  userMap[t.assignee_id]?.name    || null,
+    project_name:   projectMap[t.project_id]?.name  || null,
+    project_key:    projectMap[t.project_id]?.key   || null,
+    project_color:  projectMap[t.project_id]?.color || null,
+  }));
+}
+
 router.get('/', async (req, res) => {
   const { project_id, assignee_id, status } = req.query;
-  let q = `SELECT t.*, u.name as assignee_name, p.name as project_name, p.key as project_key, p.color as project_color
-           FROM tasks t
-           LEFT JOIN users u ON u.id = t.assignee_id
-           LEFT JOIN projects p ON p.id = t.project_id
-           WHERE t.workspace_id = $1`;
-  const params = [req.user.workspace_id];
-  let i = 2;
-  if (project_id) { q += ` AND t.project_id = $${i++}`; params.push(project_id); }
-  if (assignee_id) { q += ` AND t.assignee_id = $${i++}`; params.push(assignee_id); }
-  if (status) { q += ` AND t.status = $${i++}`; params.push(status); }
-  q += ' ORDER BY t.due_date ASC NULLS LAST, t.created_at DESC';
-  const { rows } = await pool.query(q, params);
-  res.json(rows);
+  const wid = req.user.workspace_id;
+
+  let q = supabase.from('tasks').select('*').eq('workspace_id', wid);
+  if (project_id)  q = q.eq('project_id', project_id);
+  if (assignee_id) q = q.eq('assignee_id', assignee_id);
+  if (status)      q = q.eq('status', status);
+  q = q.order('due_date', { ascending: true, nullsFirst: false }).order('created_at', { ascending: false });
+
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(await enrichTasks(data, wid));
 });
 
 router.post('/', async (req, res) => {
   const { project_id, title, description, status, priority, assignee_id, due_date } = req.body;
   if (!project_id || !title) return res.status(400).json({ error: 'project_id and title required' });
 
-  const { rows } = await pool.query(
-    `INSERT INTO tasks (project_id, workspace_id, title, description, status, priority, assignee_id, created_by, due_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [
-      project_id,
-      req.user.workspace_id,
-      title,
-      description || '',
-      status || 'todo',
-      priority || 'medium',
-      assignee_id || null,
-      req.user.id,
-      due_date || null,
-    ]
-  );
-  const task = rows[0];
+  const { data: task, error } = await supabase.from('tasks')
+    .insert({
+      project_id, workspace_id: req.user.workspace_id,
+      title, description: description || '',
+      status: status || 'todo', priority: priority || 'medium',
+      assignee_id: assignee_id || null, created_by: req.user.id,
+      due_date: due_date || null,
+    })
+    .select().single();
 
-  // Notify assignee if different from creator
-  if (assignee_id && assignee_id !== req.user.id) {
-    await pool.query(
-      `INSERT INTO notifications (workspace_id, user_id, type, title, body, task_id)
-       VALUES ($1,$2,'assign',$3,$4,$5)`,
-      [req.user.workspace_id, assignee_id, 'Task assigned to you', `"${title}" has been assigned to you by ${req.user.name}.`, task.id]
-    );
+  if (error) return res.status(500).json({ error: error.message });
+
+  if (assignee_id && parseInt(assignee_id) !== req.user.id) {
+    await supabase.from('notifications').insert({
+      workspace_id: req.user.workspace_id, user_id: assignee_id,
+      type: 'assign', title: 'Task assigned to you',
+      body: `"${title}" has been assigned to you by ${req.user.name}.`,
+      task_id: task.id,
+    });
   }
 
-  res.status(201).json(task);
+  const [enriched] = await enrichTasks([task], req.user.workspace_id);
+  res.status(201).json(enriched);
 });
 
 router.get('/:id', async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT t.*, u.name as assignee_name, p.name as project_name, p.key as project_key
-     FROM tasks t
-     LEFT JOIN users u ON u.id = t.assignee_id
-     LEFT JOIN projects p ON p.id = t.project_id
-     WHERE t.id = $1 AND t.workspace_id = $2`,
-    [req.params.id, req.user.workspace_id]
-  );
-  if (!rows.length) return res.status(404).json({ error: 'Not found' });
-  res.json(rows[0]);
+  const { data, error } = await supabase.from('tasks').select('*')
+    .eq('id', req.params.id).eq('workspace_id', req.user.workspace_id).single();
+  if (error) return res.status(404).json({ error: 'Not found' });
+  const [enriched] = await enrichTasks([data], req.user.workspace_id);
+  res.json(enriched);
 });
 
 router.put('/:id', async (req, res) => {
   const { title, description, status, priority, assignee_id, due_date } = req.body;
-  const { rows: old } = await pool.query('SELECT * FROM tasks WHERE id=$1 AND workspace_id=$2', [req.params.id, req.user.workspace_id]);
-  if (!old.length) return res.status(404).json({ error: 'Not found' });
+  const updates = { updated_at: new Date().toISOString() };
+  if (title       !== undefined) updates.title       = title;
+  if (description !== undefined) updates.description = description;
+  if (status      !== undefined) updates.status      = status;
+  if (priority    !== undefined) updates.priority    = priority;
+  if (assignee_id !== undefined) updates.assignee_id = assignee_id || null;
+  if (due_date    !== undefined) updates.due_date    = due_date || null;
 
-  const { rows } = await pool.query(
-    `UPDATE tasks SET
-       title = COALESCE($1, title),
-       description = COALESCE($2, description),
-       status = COALESCE($3, status),
-       priority = COALESCE($4, priority),
-       assignee_id = COALESCE($5, assignee_id),
-       due_date = COALESCE($6, due_date),
-       updated_at = NOW()
-     WHERE id = $7 AND workspace_id = $8 RETURNING *`,
-    [title, description, status, priority, assignee_id, due_date, req.params.id, req.user.workspace_id]
-  );
+  const { data: old } = await supabase.from('tasks').select('assignee_id, title').eq('id', req.params.id).single();
+  const { data, error } = await supabase.from('tasks').update(updates)
+    .eq('id', req.params.id).eq('workspace_id', req.user.workspace_id).select().single();
+  if (error) return res.status(404).json({ error: error.message });
 
-  // Notify new assignee if changed
-  const prev = old[0];
-  const next = rows[0];
-  if (assignee_id && assignee_id !== prev.assignee_id && assignee_id !== req.user.id) {
-    await pool.query(
-      `INSERT INTO notifications (workspace_id, user_id, type, title, body, task_id)
-       VALUES ($1,$2,'assign',$3,$4,$5)`,
-      [req.user.workspace_id, assignee_id, 'Task assigned to you', `"${next.title}" has been assigned to you.`, next.id]
-    );
+  if (assignee_id && assignee_id !== old?.assignee_id && parseInt(assignee_id) !== req.user.id) {
+    await supabase.from('notifications').insert({
+      workspace_id: req.user.workspace_id, user_id: assignee_id,
+      type: 'assign', title: 'Task assigned to you',
+      body: `"${data.title}" has been assigned to you.`, task_id: data.id,
+    });
   }
 
-  res.json(rows[0]);
+  const [enriched] = await enrichTasks([data], req.user.workspace_id);
+  res.json(enriched);
 });
 
 router.delete('/:id', async (req, res) => {
-  await pool.query('DELETE FROM tasks WHERE id=$1 AND workspace_id=$2', [req.params.id, req.user.workspace_id]);
+  await supabase.from('tasks').delete().eq('id', req.params.id).eq('workspace_id', req.user.workspace_id);
   res.json({ ok: true });
 });
 

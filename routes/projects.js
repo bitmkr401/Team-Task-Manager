@@ -1,119 +1,124 @@
-const express = require('express');
-const pool = require('../db');
+const express  = require('express');
+const supabase = require('../supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(requireAuth);
 
 router.get('/', async (req, res) => {
-  const wid = req.user.workspace_id;
-  const { rows: projects } = await pool.query(
-    `SELECT p.id, p.workspace_id, p.name, p.key, p.description, p.color, p.status, p.owner_id, p.due_date, p.created_at,
-       u.name as owner_name
-     FROM projects p
-     LEFT JOIN users u ON u.id = p.owner_id
-     WHERE p.workspace_id = $1
-     ORDER BY p.created_at ASC`,
-    [wid]
-  );
-  const { rows: taskCounts } = await pool.query(
-    `SELECT project_id, COUNT(*) as task_count, COUNT(CASE WHEN status='done' THEN 1 END) as done_count
-     FROM tasks WHERE workspace_id = $1 GROUP BY project_id`,
-    [wid]
-  );
-  const { rows: memCounts } = await pool.query(
-    `SELECT pm.project_id, COUNT(*) as member_count FROM project_members pm
-     JOIN projects p ON p.id = pm.project_id WHERE p.workspace_id = $1 GROUP BY pm.project_id`,
-    [wid]
-  );
-  const tcMap = Object.fromEntries(taskCounts.map(r => [r.project_id, r]));
-  const mcMap = Object.fromEntries(memCounts.map(r => [r.project_id, r.member_count]));
-  const rows = projects.map(p => ({
-    ...p,
-    task_count: tcMap[p.id]?.task_count || 0,
-    done_count: tcMap[p.id]?.done_count || 0,
-    member_count: mcMap[p.id] || 0,
-  }));
-  res.json(rows);
+  try {
+    const wid = req.user.workspace_id;
+
+    const { data: projects, error: projErr } = await supabase
+      .from('projects').select('*').eq('workspace_id', wid).order('created_at');
+    if (projErr) return res.status(500).json({ error: projErr.message });
+    if (!projects || projects.length === 0) return res.json([]);
+
+    const projectIds = projects.map(p => p.id);
+    const ownerIds = [...new Set(projects.map(p => p.owner_id).filter(Boolean))];
+
+    const [{ data: taskRows }, { data: memRows }, { data: owners }] = await Promise.all([
+      supabase.from('tasks').select('project_id, status').eq('workspace_id', wid),
+      supabase.from('project_members').select('project_id, user_id').in('project_id', projectIds),
+      ownerIds.length ? supabase.from('users').select('id, name').in('id', ownerIds) : { data: [] },
+    ]);
+
+    const ownerMap = Object.fromEntries((owners || []).map(u => [u.id, u.name]));
+    const tasksByProject = {};
+    for (const t of taskRows || []) {
+      if (!tasksByProject[t.project_id]) tasksByProject[t.project_id] = [];
+      tasksByProject[t.project_id].push(t);
+    }
+    const memCount = {};
+    for (const m of memRows || []) {
+      memCount[m.project_id] = (memCount[m.project_id] || 0) + 1;
+    }
+
+    const rows = projects.map(p => {
+      const tasks = tasksByProject[p.id] || [];
+      return {
+        ...p,
+        owner_name: ownerMap[p.owner_id] || null,
+        task_count: tasks.length,
+        done_count: tasks.filter(t => t.status === 'done').length,
+        member_count: memCount[p.id] || 0,
+      };
+    });
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 router.post('/', requireAdmin, async (req, res) => {
   const { name, key, description, color, due_date } = req.body;
   if (!name || !key) return res.status(400).json({ error: 'Name and key required' });
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const { rows } = await client.query(
-      `INSERT INTO projects (workspace_id, name, key, description, color, owner_id, due_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [req.user.workspace_id, name, key.toUpperCase(), description || '', color || '#3a4978', req.user.id, due_date || null]
-    );
-    const project = rows[0];
-    // Add creator as member
-    await client.query('INSERT INTO project_members VALUES ($1,$2)', [project.id, req.user.id]);
-    await client.query('COMMIT');
-    res.status(201).json(project);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    if (err.code === '23505') return res.status(409).json({ error: 'Project key already exists' });
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  } finally {
-    client.release();
+  const { data: project, error } = await supabase.from('projects')
+    .insert({ workspace_id: req.user.workspace_id, name, key: key.toUpperCase(),
+      description: description || '', color: color || '#3a4978',
+      owner_id: req.user.id, due_date: due_date || null })
+    .select().single();
+
+  if (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Project key already exists' });
+    return res.status(500).json({ error: error.message });
   }
+
+  await supabase.from('project_members').insert({ project_id: project.id, user_id: req.user.id });
+  res.status(201).json({ ...project, task_count: 0, done_count: 0, member_count: 1 });
 });
 
 router.get('/:id', async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT p.*, u.name as owner_name FROM projects p
-     LEFT JOIN users u ON u.id = p.owner_id
-     WHERE p.id = $1 AND p.workspace_id = $2`,
-    [req.params.id, req.user.workspace_id]
-  );
-  if (!rows.length) return res.status(404).json({ error: 'Not found' });
-  res.json(rows[0]);
+  const { data, error } = await supabase.from('projects').select('*')
+    .eq('id', req.params.id).eq('workspace_id', req.user.workspace_id).single();
+  if (error) return res.status(404).json({ error: 'Not found' });
+  let owner_name = null;
+  if (data.owner_id) {
+    const { data: u } = await supabase.from('users').select('name').eq('id', data.owner_id).single();
+    owner_name = u?.name || null;
+  }
+  res.json({ ...data, owner_name });
 });
 
 router.put('/:id', requireAdmin, async (req, res) => {
   const { name, description, color, status, due_date } = req.body;
-  const { rows } = await pool.query(
-    `UPDATE projects SET
-       name = COALESCE($1, name),
-       description = COALESCE($2, description),
-       color = COALESCE($3, color),
-       status = COALESCE($4, status),
-       due_date = COALESCE($5, due_date)
-     WHERE id = $6 AND workspace_id = $7 RETURNING *`,
-    [name, description, color, status, due_date, req.params.id, req.user.workspace_id]
-  );
-  if (!rows.length) return res.status(404).json({ error: 'Not found' });
-  res.json(rows[0]);
+  const updates = {};
+  if (name !== undefined)        updates.name = name;
+  if (description !== undefined) updates.description = description;
+  if (color !== undefined)       updates.color = color;
+  if (status !== undefined)      updates.status = status;
+  if (due_date !== undefined)    updates.due_date = due_date;
+
+  const { data, error } = await supabase.from('projects').update(updates)
+    .eq('id', req.params.id).eq('workspace_id', req.user.workspace_id).select().single();
+  if (error) return res.status(404).json({ error: error.message });
+  res.json(data);
 });
 
 router.delete('/:id', requireAdmin, async (req, res) => {
-  await pool.query('DELETE FROM projects WHERE id = $1 AND workspace_id = $2', [req.params.id, req.user.workspace_id]);
+  await supabase.from('projects').delete().eq('id', req.params.id).eq('workspace_id', req.user.workspace_id);
   res.json({ ok: true });
 });
 
 router.get('/:id/members', async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT u.id, u.name, u.email, u.role, u.title FROM users u
-     JOIN project_members pm ON pm.user_id = u.id
-     WHERE pm.project_id = $1 AND u.workspace_id = $2`,
-    [req.params.id, req.user.workspace_id]
-  );
-  res.json(rows);
+  const { data } = await supabase.from('project_members')
+    .select('users(id, name, email, role, title)')
+    .eq('project_id', req.params.id);
+  res.json((data || []).map(r => r.users).filter(Boolean));
 });
 
 router.post('/:id/members', requireAdmin, async (req, res) => {
-  const { user_id } = req.body;
-  await pool.query('INSERT INTO project_members VALUES ($1,$2) ON CONFLICT DO NOTHING', [req.params.id, user_id]);
+  await supabase.from('project_members')
+    .upsert({ project_id: req.params.id, user_id: req.body.user_id }, { ignoreDuplicates: true });
   res.json({ ok: true });
 });
 
 router.delete('/:id/members/:uid', requireAdmin, async (req, res) => {
-  await pool.query('DELETE FROM project_members WHERE project_id=$1 AND user_id=$2', [req.params.id, req.params.uid]);
+  await supabase.from('project_members')
+    .delete().eq('project_id', req.params.id).eq('user_id', req.params.uid);
   res.json({ ok: true });
 });
 

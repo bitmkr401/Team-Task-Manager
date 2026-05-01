@@ -1,31 +1,30 @@
-const express = require('express');
-const pool = require('../db');
+const express  = require('express');
+const supabase = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(requireAuth);
 
 router.get('/', async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT * FROM notifications WHERE user_id=$1 AND workspace_id=$2 ORDER BY created_at DESC LIMIT 50`,
-    [req.user.id, req.user.workspace_id]
-  );
-  res.json(rows);
+  const { data } = await supabase.from('notifications')
+    .select('*')
+    .eq('user_id', req.user.id)
+    .eq('workspace_id', req.user.workspace_id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  res.json(data || []);
 });
 
-router.put('/:id/read', async (req, res) => {
-  await pool.query(
-    'UPDATE notifications SET read=true WHERE id=$1 AND user_id=$2',
-    [req.params.id, req.user.id]
-  );
+// Must come before /:id/read
+router.put('/read-all', async (req, res) => {
+  await supabase.from('notifications').update({ read: true })
+    .eq('user_id', req.user.id).eq('workspace_id', req.user.workspace_id);
   res.json({ ok: true });
 });
 
-router.put('/read-all', async (req, res) => {
-  await pool.query(
-    'UPDATE notifications SET read=true WHERE user_id=$1 AND workspace_id=$2',
-    [req.user.id, req.user.workspace_id]
-  );
+router.put('/:id/read', async (req, res) => {
+  await supabase.from('notifications').update({ read: true })
+    .eq('id', req.params.id).eq('user_id', req.user.id);
   res.json({ ok: true });
 });
 

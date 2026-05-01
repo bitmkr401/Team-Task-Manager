@@ -1,6 +1,6 @@
-const express = require('express');
-const bcrypt = require('bcryptjs');
-const pool = require('../db');
+const express  = require('express');
+const bcrypt   = require('bcryptjs');
+const supabase = require('../supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -8,17 +8,17 @@ router.use(requireAuth);
 
 router.get('/', async (req, res) => {
   const wid = req.user.workspace_id;
-  const { rows: users } = await pool.query(
-    `SELECT u.id, u.name, u.email, u.role, u.title, u.created_at FROM users u WHERE u.workspace_id = $1 ORDER BY u.name`,
-    [wid]
-  );
-  const { rows: openTasks } = await pool.query(
-    `SELECT assignee_id, COUNT(*) as open_tasks FROM tasks WHERE workspace_id=$1 AND status!='done' GROUP BY assignee_id`,
-    [wid]
-  );
-  const otMap = Object.fromEntries(openTasks.map(r => [r.assignee_id, r.open_tasks]));
-  const rows = users.map(u => ({ ...u, open_tasks: otMap[u.id] || 0 }));
-  res.json(rows);
+  const [{ data: users }, { data: openTasks }] = await Promise.all([
+    supabase.from('users').select('id, name, email, role, title, created_at').eq('workspace_id', wid).order('name'),
+    supabase.from('tasks').select('assignee_id').eq('workspace_id', wid).neq('status', 'done'),
+  ]);
+
+  const openMap = {};
+  for (const t of openTasks || []) {
+    if (t.assignee_id) openMap[t.assignee_id] = (openMap[t.assignee_id] || 0) + 1;
+  }
+
+  res.json((users || []).map(u => ({ ...u, open_tasks: openMap[u.id] || 0 })));
 });
 
 router.post('/invite', requireAdmin, async (req, res) => {
@@ -28,18 +28,17 @@ router.post('/invite', requireAdmin, async (req, res) => {
   const tempPassword = Math.random().toString(36).slice(-8);
   const hash = await bcrypt.hash(tempPassword, 10);
 
-  try {
-    const { rows } = await pool.query(
-      `INSERT INTO users (workspace_id, name, email, password_hash, role, title)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, email, role, title`,
-      [req.user.workspace_id, name, email, hash, role || 'Member', title || 'Team Member']
-    );
-    res.status(201).json({ ...rows[0], temp_password: tempPassword });
-  } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  const { data, error } = await supabase.from('users')
+    .insert({ workspace_id: req.user.workspace_id, name, email, password_hash: hash,
+      role: role || 'Member', title: title || 'Team Member' })
+    .select('id, name, email, role, title').single();
+
+  if (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Email already registered' });
+    return res.status(500).json({ error: error.message });
   }
+
+  res.status(201).json({ ...data, temp_password: tempPassword });
 });
 
 router.put('/:id/role', requireAdmin, async (req, res) => {
@@ -47,17 +46,16 @@ router.put('/:id/role', requireAdmin, async (req, res) => {
   if (!['Admin', 'Member'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
   if (parseInt(req.params.id) === req.user.id) return res.status(400).json({ error: 'Cannot change your own role' });
 
-  const { rows } = await pool.query(
-    'UPDATE users SET role=$1 WHERE id=$2 AND workspace_id=$3 RETURNING id, name, role',
-    [role, req.params.id, req.user.workspace_id]
-  );
-  if (!rows.length) return res.status(404).json({ error: 'Not found' });
-  res.json(rows[0]);
+  const { data, error } = await supabase.from('users').update({ role })
+    .eq('id', req.params.id).eq('workspace_id', req.user.workspace_id)
+    .select('id, name, role').single();
+  if (error) return res.status(404).json({ error: 'Not found' });
+  res.json(data);
 });
 
 router.delete('/:id', requireAdmin, async (req, res) => {
   if (parseInt(req.params.id) === req.user.id) return res.status(400).json({ error: 'Cannot remove yourself' });
-  await pool.query('DELETE FROM users WHERE id=$1 AND workspace_id=$2', [req.params.id, req.user.workspace_id]);
+  await supabase.from('users').delete().eq('id', req.params.id).eq('workspace_id', req.user.workspace_id);
   res.json({ ok: true });
 });
 
