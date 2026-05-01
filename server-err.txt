@@ -1,0 +1,17 @@
+D:\assignment\routes\projects.js:15
+      (projects || []).map(p => p.id).concat([0]) // avoid empty IN
+       ^
+
+ReferenceError: Cannot access 'projects' before initialization
+    at D:\assignment\routes\projects.js:15:8
+    at Layer.handle [as handle_request] (D:\assignment\node_modules\express\lib\router\layer.js:95:5)
+    at next (D:\assignment\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (D:\assignment\node_modules\express\lib\router\route.js:119:3)
+    at Layer.handle [as handle_request] (D:\assignment\node_modules\express\lib\router\layer.js:95:5)
+    at D:\assignment\node_modules\express\lib\router\index.js:284:15
+    at router.process_params (D:\assignment\node_modules\express\lib\router\index.js:346:12)
+    at next (D:\assignment\node_modules\express\lib\router\index.js:280:10)
+    at requireAuth (D:\assignment\middleware\auth.js:18:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+
+Node.js v24.12.0

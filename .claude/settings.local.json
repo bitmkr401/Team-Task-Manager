@@ -18,7 +18,14 @@
       "Bash(node -e \"process.stdin.resume\\(\\);let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const a=JSON.parse\\(d\\);console.log\\('Projects:',a.length,a[0]&&a[0].name\\)}\\)\")",
       "Bash(curl *)",
       "Bash(pkill -f \"node server.js\")",
-      "Bash(node server.js)"
+      "Bash(node server.js)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /PID 38848 /F)",
+      "Read(//tmp/**)",
+      "Bash(pkill -f \"node server\")",
+      "Bash(git config *)",
+      "Bash(git remote *)",
+      "Bash(git push *)"
     ]
   }
 }
